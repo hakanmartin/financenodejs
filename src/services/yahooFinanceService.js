@@ -1,0 +1,85 @@
+import YahooFinance from 'yahoo-finance2';
+import NodeCache from 'node-cache';
+import { query } from '../db.js';
+
+const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
+
+// Her 60 saniyede bir cron/interval çalışacağı için verilerin eski kalması söz konusu değil.
+// Ancak tam 60. saniyede cache temizlendiği an, API'den yanıt gelene kadar 1-2 saniye boşluk olabiliyor.
+// API'den yeni veri geldiğinde zaten eski veriyi ezeceği için cache süresiz olarak ayarlandı.
+const yahooCache = new NodeCache();
+
+// Çekmek istediğimiz semboller
+// const YAHOO_SYMBOLS = ['THYAO.IS', 'TRY=X', 'GC=F', 'AAPL'];
+
+export const getYahooPrices = async () => {
+    // 1. Önbellekte (cache) var mı diye kontrol et
+    const cachedPrices = yahooCache.get('yahoo_prices');
+    if (cachedPrices) {
+        return cachedPrices;
+    }
+
+    // 2. Yoksa Yahoo'dan anlık olarak çek
+    try {
+        const dbAssets = await query('SELECT symbol FROM assets');
+        const symbols = dbAssets.rows.map(row => row.symbol);
+        
+        // Formüllerin sağlıklı çalışması için USD/TRY kuru her ihtimale karşı zorunlu eklenir
+        if (!symbols.includes('USDTRY=X') && !symbols.includes('TRY=X')) {
+            symbols.push('TRY=X');
+        }
+
+        // XAUUSD=X Yahoo üzerinde spot piyasada düzgün dönmüyor. Bu yüzden garanti veren vadeli GC=F sembolü ile değiştirelim.
+        const fetchSymbols = [...new Set(symbols.map(s => (s === 'XAUUSD=X' || s === 'XAU') ? 'GC=F' : s))];
+
+        const quotes = await yahooFinance.quote(fetchSymbols);
+        // Çekilen veriyi 180 saniye boyunca bellekte tut (isteğe bağlı süre devredilebilir)
+        yahooCache.set('yahoo_prices', quotes, 180);
+        console.log(`[Yahoo Servisi] Veriler On-Demand çekildi. Daha taze (${new Date().toLocaleTimeString('tr-TR')})`);
+        return quotes;
+    } catch (error) {
+        console.error('[Yahoo Servisi Hatası]:', error.message);
+        return [];
+    }
+};
+
+export const getYahooCache = () => yahooCache;
+
+export const getYahooChart = async (symbol, range = '1mo') => {
+    // Cache anahtarını artık aralığa göre de ayırmalıyız
+    const cacheKey = `chart_${symbol}_${range}`;
+    const cachedData = yahooCache.get(cacheKey);
+
+    if (cachedData) return cachedData;
+
+    try {
+        let period1;
+        let interval = '1d'; // 1 ay ve üstü için günlük veri en iyisidir
+
+        const now = Date.now();
+
+        // Frontend'den gelen isteğe göre zamanı dinamik belirliyoruz
+        if (range === '1d') {
+            period1 = new Date(now - 24 * 60 * 60 * 1000);
+            interval = '15m'; // 1 günlük grafikte 15 dakikalık mumlar/çizgiler
+        } else if (range === '1mo') {
+            period1 = new Date(now - 30 * 24 * 60 * 60 * 1000);
+        } else if (range === '6mo') {
+            period1 = new Date(now - 180 * 24 * 60 * 60 * 1000);
+        } else if (range === '1y') {
+            period1 = new Date(now - 365 * 24 * 60 * 60 * 1000);
+        }
+
+        const chartData = await yahooFinance.chart(symbol, {
+            period1: period1,
+            interval: interval
+        });
+
+        // Veriyi belleğe kaydet (Grafik verisi çok sık değişmez, 5 dakika cache makuldür)
+        yahooCache.set(cacheKey, chartData.quotes, 300);
+        return chartData.quotes;
+    } catch (error) {
+        console.error(`[Yahoo Chart Hatası] ${symbol} için veri çekilemedi:`, error.message);
+        return [];
+    }
+};
