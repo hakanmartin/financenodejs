@@ -1,4 +1,4 @@
-# Finans Node.js Arka Uç
+# Finans Takip Node.js Arka Uç
 
 Bu depo, Node.js ve PostgreSQL ile oluşturulmuş Finans arka uç (backend) hizmetini içerir. Tam yığıt bir test ortamı için şu sıra ile servisleri başlatın: Docker Compose (PostgreSQL) > financenodejs (mevcut depo) > financefront (Nextjs) .
 Dilerseniz tüm klasörleri birleştirip tek bir docker komutu ile daha kolay başlatabilirsiniz (bağımsız test senaryoları için mevcut şekilde devam edin).
