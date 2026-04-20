@@ -23,7 +23,7 @@ export const getYahooPrices = async () => {
     try {
         const dbAssets = await query('SELECT symbol FROM assets');
         const symbols = dbAssets.rows.map(row => row.symbol);
-        
+
         // Formüllerin sağlıklı çalışması için USD/TRY kuru her ihtimale karşı zorunlu eklenir
         if (!symbols.includes('USDTRY=X') && !symbols.includes('TRY=X')) {
             symbols.push('TRY=X');
@@ -62,6 +62,9 @@ export const getYahooChart = async (symbol, range = '1mo') => {
         if (range === '1d') {
             period1 = new Date(now - 24 * 60 * 60 * 1000);
             interval = '15m'; // 1 günlük grafikte 15 dakikalık mumlar/çizgiler
+        } else if (range === '5d') {
+            period1 = new Date(now - 5 * 24 * 60 * 60 * 1000);
+            interval = '1h'; // 5 günlük grafikte 1 saatlik mumlar/çizgiler
         } else if (range === '1mo') {
             period1 = new Date(now - 30 * 24 * 60 * 60 * 1000);
         } else if (range === '6mo') {
@@ -81,5 +84,38 @@ export const getYahooChart = async (symbol, range = '1mo') => {
     } catch (error) {
         console.error(`[Yahoo Chart Hatası] ${symbol} için veri çekilemedi:`, error.message);
         return [];
+    }
+};
+
+export const getYahooHistoricalPrice = async (symbol, dateStr) => {
+    try {
+        const dateObj = new Date(dateStr);
+        const period1 = new Date(dateObj.getTime() - 4 * 24 * 60 * 60 * 1000);
+        const period2 = new Date(dateObj.getTime() + 2 * 24 * 60 * 60 * 1000);
+        
+        const result = await yahooFinance.historical(symbol, {
+            period1: period1,
+            period2: period2,
+            interval: '1d'
+        });
+        
+        if (result && result.length > 0) {
+            const targetTime = dateObj.getTime();
+            let closestQuote = result[0];
+            let minDiff = Math.abs(new Date(result[0].date).getTime() - targetTime);
+
+            for (let i = 1; i < result.length; i++) {
+                const diff = Math.abs(new Date(result[i].date).getTime() - targetTime);
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closestQuote = result[i];
+                }
+            }
+            return closestQuote.close;
+        }
+        return null;
+    } catch (e) {
+        console.error(`[Yahoo Historical Hatası] ${symbol} / ${dateStr}:`, e.message);
+        return null;
     }
 };
