@@ -2,7 +2,7 @@ import YahooFinance from 'yahoo-finance2';
 import NodeCache from 'node-cache';
 import { query } from '../db.js';
 
-const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
+const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey', 'ripHistorical'] });
 
 // Her 60 saniyede bir cron/interval çalışacağı için verilerin eski kalması söz konusu değil.
 // Ancak tam 60. saniyede cache temizlendiği an, API'den yanıt gelene kadar 1-2 saniye boşluk olabiliyor.
@@ -67,10 +67,18 @@ export const getYahooChart = async (symbol, range = '1mo') => {
             interval = '1h'; // 5 günlük grafikte 1 saatlik mumlar/çizgiler
         } else if (range === '1mo') {
             period1 = new Date(now - 30 * 24 * 60 * 60 * 1000);
+        } else if (range === '3mo') {
+            period1 = new Date(now - 90 * 24 * 60 * 60 * 1000);
         } else if (range === '6mo') {
             period1 = new Date(now - 180 * 24 * 60 * 60 * 1000);
+        } else if (range === 'ytd') {
+            period1 = new Date(new Date().getFullYear(), 0, 1);
         } else if (range === '1y') {
             period1 = new Date(now - 365 * 24 * 60 * 60 * 1000);
+        } else if (range === '3y') {
+            period1 = new Date(now - 3 * 365 * 24 * 60 * 60 * 1000);
+        } else if (range === '5y') {
+            period1 = new Date(now - 5 * 365 * 24 * 60 * 60 * 1000);
         }
 
         const chartData = await yahooFinance.chart(symbol, {
@@ -116,6 +124,34 @@ export const getYahooHistoricalPrice = async (symbol, dateStr) => {
         return null;
     } catch (e) {
         console.error(`[Yahoo Historical Hatası] ${symbol} / ${dateStr}:`, e.message);
+        return null;
+    }
+};
+
+export const searchYahooSymbol = async (symbol) => {
+    try {
+        const quote = await yahooFinance.quote(symbol);
+        if (quote && quote.shortName && quote.regularMarketPrice !== undefined) {
+            let localType = 'stock';
+            const qType = (quote.quoteType || '').toUpperCase();
+            if (qType === 'CRYPTOCURRENCY') localType = 'crypto';
+            else if (qType === 'CURRENCY') localType = 'cash';
+            else if (qType === 'ETF' || qType === 'MUTUALFUND') localType = 'finance';
+            else if (qType === 'FUTURE' || qType === 'COMMODITY') localType = 'commodity';
+            else if (qType === 'EQUITY') localType = 'stock';
+            else if (qType === 'INDEX') localType = 'index';
+
+            return {
+                symbol: quote.symbol,
+                name: quote.shortName || quote.longName || symbol,
+                price: quote.regularMarketPrice,
+                changePercent: quote.regularMarketChangePercent || 0,
+                asset_type: localType
+            };
+        }
+        return null;
+    } catch (e) {
+        console.error(`[Yahoo Search Hatası] ${symbol}:`, e.message);
         return null;
     }
 };

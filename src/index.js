@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 import cors from 'cors';
 import { auth } from 'express-oauth2-jwt-bearer';
 
-import { getYahooChart, getYahooHistoricalPrice } from './services/yahooFinanceService.js';
+import { getYahooChart, getYahooHistoricalPrice, searchYahooSymbol, getYahooCache } from './services/yahooFinanceService.js';
 import { getNormalizedPrices } from './services/normalizationService.js';
 import { query } from './db.js';
 
@@ -81,6 +81,27 @@ app.get('/api/chart', jwtCheck, async (req, res) => {
         res.json({ success: true, data: quotes });
     } else {
         res.status(500).json({ success: false, message: 'Grafik verisi alınamadı.' });
+    }
+});
+
+// HERKESE AÇIK ENDPOINT: Sembol Arama (Yahoo Finance Üzerinden)
+app.get('/api/search', jwtCheck, async (req, res) => {
+    const { symbol } = req.query;
+
+    if (!symbol) {
+        return res.status(400).json({ success: false, message: 'Sembol gerekli.' });
+    }
+
+    try {
+        const data = await searchYahooSymbol(symbol);
+        if (data) {
+            return res.json({ success: true, data });
+        } else {
+            return res.status(404).json({ success: false, message: 'Varlık bulunamadı.' });
+        }
+    } catch (e) {
+        console.error("Arama hatası:", e);
+        return res.status(500).json({ success: false, message: 'Sunucu hatası' });
     }
 });
 
@@ -313,7 +334,7 @@ app.get('/api/chart/portfolio/normalize', jwtCheck, async (req, res) => {
 // Portföye varlık ekle / güncelle
 app.post('/api/portfolio', jwtCheck, async (req, res) => {
     try {
-        const { email, asset_symbol, quantity, purchase_date } = req.body;
+        const { email, asset_symbol, quantity, purchase_date, asset_name, asset_type } = req.body;
 
         if (!email || !asset_symbol || quantity === undefined) {
             return res.status(400).json({ success: false, message: 'email, asset_symbol ve quantity gerekli.' });
@@ -325,6 +346,14 @@ app.post('/api/portfolio', jwtCheck, async (req, res) => {
             return res.status(404).json({ success: false, message: 'Kullanıcı bulunamadı.' });
         }
         const user_id = userResult.rows[0].id;
+
+        // Varlığı on conflict do nothing ile destekle ki FK hatası çıkmasın
+        const insertName = asset_name || asset_symbol;
+        const insertType = asset_type || 'stock';
+        await query(
+            `INSERT INTO assets (symbol, name, asset_type) VALUES ($1, $2, $3) ON CONFLICT (symbol) DO NOTHING`,
+            [asset_symbol, insertName, insertType]
+        );
 
         // Her durumda (quantity <= 0 olsa bile) sıfır olarak güncelliyoruz ki tarihçesi kaybolmasın
         const finalQuantity = quantity < 0 ? 0 : quantity;
@@ -340,10 +369,14 @@ app.post('/api/portfolio', jwtCheck, async (req, res) => {
             [user_id, asset_symbol, finalQuantity, finalDate]
         );
 
+        // Yeni asset eklenmiş olabileceği için önbelleği (cache) temizleyelim ki güncel fiyatlar yansısın
+        const cache = getYahooCache();
+        if (cache) cache.del('yahoo_prices');
+
         res.json({ success: true, message: 'Portföy güncellendi.' });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ success: false });
+        console.error("Add Portfolio error:", error);
+        res.status(500).json({ success: false, message: error.message || 'Sunucu hatası' });
     }
 });
 
@@ -382,7 +415,14 @@ app.get('/api/portfolio', jwtCheck, async (req, res) => {
                     const historicalPriceRaw = await getYahooHistoricalPrice(fetchSymbol, firstAddEntry.date);
                     
                     if (historicalPriceRaw) {
-                        priceAtAdd = isGold ? historicalPriceRaw * goldModifier : historicalPriceRaw;
+                        if (isGold) {
+                            priceAtAdd = historicalPriceRaw * goldModifier;
+                        } else if (!item.asset_symbol.endsWith('.IS') && item.asset_symbol !== 'TRY=X' && item.asset_symbol !== 'USDTRY=X') {
+                            // Kripto veya ABD Hissesi (USD ile fiyatlanıyor), bu nedenle o anki / şimdiki Dolar Kuru ile çarpıp TL'ye çeviriyoruz
+                            priceAtAdd = historicalPriceRaw * usdTryRate;
+                        } else {
+                            priceAtAdd = historicalPriceRaw;
+                        }
                     }
                 }
             }
@@ -427,6 +467,33 @@ app.delete('/api/portfolio/type', jwtCheck, async (req, res) => {
         );
 
         res.json({ success: true, message: 'Varlık türü başarıyla silindi.' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false });
+    }
+});
+
+// Tekil varlığı portföyden tamamen sil
+app.delete('/api/portfolio/asset', jwtCheck, async (req, res) => {
+    try {
+        const { email, asset_symbol } = req.query;
+
+        if (!email || !asset_symbol) {
+            return res.status(400).json({ success: false, message: 'Email ve asset_symbol gerekli.' });
+        }
+
+        const userResult = await query('SELECT id FROM users WHERE email = $1', [email]);
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Kullanıcı bulunamadı.' });
+        }
+        const user_id = userResult.rows[0].id;
+
+        await query(
+            `DELETE FROM user_portfolio WHERE user_id = $1 AND asset_symbol = $2`,
+            [user_id, asset_symbol]
+        );
+
+        res.json({ success: true, message: 'Varlık başarıyla silindi.' });
     } catch (error) {
         console.error(error);
         res.status(500).json({ success: false });
