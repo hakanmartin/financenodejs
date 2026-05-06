@@ -130,8 +130,32 @@ export const getYahooHistoricalPrice = async (symbol, dateStr) => {
 
 export const searchYahooSymbol = async (symbol) => {
     try {
-        const quote = await yahooFinance.quote(symbol);
-        if (quote && quote.shortName && quote.regularMarketPrice !== undefined) {
+        let quote = null;
+        
+        try {
+            // Önce sembol olarak doğrudan sorgulamayı dene
+            quote = await yahooFinance.quote(symbol);
+            
+            // Eğer quote tanımsız dönerse veya fiyatı yoksa hata fırlat ki isim aramasına geçsin
+            if (!quote || quote.regularMarketPrice === undefined) {
+                throw new Error("Sembol bulunamadı");
+            }
+        } catch (quoteError) {
+            // Doğrudan bulunamazsa isim olarak aramaya geç (Fallback)
+            // Yahoo'nun arama API'sindeki son değişikliklerden dolayı şema doğrulamasını (validation) devre dışı bırakıyoruz.
+            const searchResults = await yahooFinance.search(symbol, {}, { validateResult: false });
+            
+            if (searchResults && searchResults.quotes && searchResults.quotes.length > 0) {
+                // Arama sonuçlarından en alakalı olan ilk kaydın sembolünü al
+                const foundSymbol = searchResults.quotes[0].symbol;
+                // Bulunan sembol ile gerçek fiyatı ve detayları çek
+                quote = await yahooFinance.quote(foundSymbol);
+            } else {
+                throw new Error("İsim araması için de sonuç bulunamadı.");
+            }
+        }
+
+        if (quote && quote.regularMarketPrice !== undefined) {
             let localType = 'stock';
             const qType = (quote.quoteType || '').toUpperCase();
             if (qType === 'CRYPTOCURRENCY') localType = 'crypto';
@@ -143,7 +167,7 @@ export const searchYahooSymbol = async (symbol) => {
 
             return {
                 symbol: quote.symbol,
-                name: quote.shortName || quote.longName || symbol,
+                name: quote.shortName || quote.longName || quote.symbol,
                 price: quote.regularMarketPrice,
                 changePercent: quote.regularMarketChangePercent || 0,
                 asset_type: localType
